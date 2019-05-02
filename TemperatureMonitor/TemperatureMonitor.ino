@@ -3,13 +3,22 @@
 #include "libs/dht.h"
 #include "libs/dht.cpp"
 
-#if defined(ARDUINO_AVR_MEGA2560)
+#if defined(ARDUINO_AVR_MEGA2560) && (ETH_ON)
   #include <SPI.h>
   #include <Ethernet.h>
   #include <EthernetUdp.h>
 #endif
 
+#define noCO2_ON
+#define DISPLAY_ON
+
+#ifdef CO2_ON
+#include "MHZ.h"
+#endif
+
 #include <Wire.h>
+
+#ifdef DISPLAY_ON
 #include <hd44780.h>                       // main hd44780 header
 #include <hd44780ioClass/hd44780_I2Cexp.h> // i2c expander i/o class header
 
@@ -26,8 +35,9 @@ byte deg[8] = {
   B00000,
   B00000,
 };
+#endif
 
-#if defined(ARDUINO_AVR_MEGA2560)
+#if defined(ARDUINO_AVR_MEGA2560) && (ETH_ON)
   // the media access control (ethernet hardware) address for the shield:
   byte mac[] = { 0xDE, 0xAD, 0xBE, 0xEF, 0xFE, 0xED }; 
   EthernetServer server(80);
@@ -38,11 +48,11 @@ byte deg[8] = {
   byte packetBuffer[ NTP_PACKET_SIZE]; //buffer to hold incoming and outgoing packets
   // A UDP instance to let us send and receive packets over UDP
   EthernetUDP Udp;
-  #define TIME_RESYNC_TIMEOUT 10*24*60*60*1000 // 10 days in milliseconds
-  #define TIME_SYNC_TIMEOUT   60*1000 // 1 minute in milliseconds
-  unsigned long last_time_update_millis;
-  boolean time_is_set = false;
 #endif
+#define TIME_RESYNC_TIMEOUT 10*24*60*60*1000 // 10 days in milliseconds
+#define TIME_SYNC_TIMEOUT   60*1000 // 1 minute in milliseconds
+unsigned long last_time_update_millis;
+boolean time_is_set = false;
 
 dht DHT;
 #define DHT22_PIN 6
@@ -53,13 +63,20 @@ unsigned long measure_checkpoint = 0;
 int eth_connected;
 int eth_hardware_present;
 
+#ifdef CO2_ON
+#define CO2_IN_PWM_PIN 10 //pwm pin
+#define CO2_IN_TX_PIN 11 //uart pin
+#define CO2_IN_RX_PIN 12 //uart pin
+
+MHZ co2(CO2_IN_RX_PIN, CO2_IN_TX_PIN, CO2_IN_PWM_PIN, MHZ19B);
+#endif
 
 void setup() 
 {
     Serial.begin(115200);
     Serial.println("Monitor startup...");
   
-    #if defined(ARDUINO_AVR_MEGA2560)
+    #if defined(ARDUINO_AVR_MEGA2560) && (ETH_ON)
     if (Ethernet.hardwareStatus() == EthernetNoHardware) {
       Serial.println("No ETH hardware");
     }
@@ -77,6 +94,7 @@ void setup()
     }
     #endif
     
+    #ifdef DISPLAY_ON
     int lcd_status = lcd.begin(LCD_COLS, LCD_ROWS);
     if(lcd_status) // non zero status means it was unsuccesful
     {
@@ -91,8 +109,24 @@ void setup()
     // Print a message to the LCD
     if (eth_connected == 1) lcd.print("ETH UP|LCD OK");
     else lcd.print("ETH DOWN|LCD OK");
+    // lcd.noBacklight();
+    #endif
 
-    delay(2000);
+    #ifdef CO2_ON
+    //pinMode(CO2_IN_PWM_PIN, INPUT);
+    Serial.println("CO2 meter enabled");
+
+    if (co2.isPreHeating()) {
+      Serial.print("CO2 Preheating");
+      while (co2.isPreHeating()) {
+        Serial.print(".");
+        delay(5000);
+      }
+      Serial.println();
+    }
+    #endif
+
+    delay(1000);
 
 }
 
@@ -163,6 +197,22 @@ void measure()
     previous_humidity = DHT.humidity;
     Serial.println(" ");
 
+    int ppm_uart = 0;
+    #ifdef CO2_ON
+    ppm_uart = co2.readCO2UART();
+    if (ppm_uart > 0) {
+      Serial.print("PPMuart: ");
+      Serial.print(ppm_uart);
+    }
+
+    int temperature = co2.getLastTemperature();
+    if (temperature > 0) {
+      Serial.print(", Temperature: ");
+      Serial.println(temperature);
+    }
+    #endif
+
+    #ifdef DISPLAY_ON
     int lcd_status = lcd.setCursor(0, 1);
     if(lcd_status) // non zero status means it was unsuccesful
     {
@@ -173,14 +223,15 @@ void measure()
     }
 
     // print uptime on lcd device: (time since last reset)
-    LcdPrintMeasurements(lcd, DHT.temperature, DHT.humidity);
+    LcdPrintMeasurements(lcd, DHT.temperature, DHT.humidity, ppm_uart);
+    #endif
   }
 }
 
 
 void checkEthConnection()
 {
-  #if defined(ARDUINO_AVR_MEGA2560)
+  #if defined(ARDUINO_AVR_MEGA2560) && (ETH_ON)
   int eth_maintain = Ethernet.maintain();
   if (eth_maintain == 4)  // rebind success
   {
@@ -195,7 +246,7 @@ void checkEthConnection()
   #endif
 }
 
-#if defined(ARDUINO_AVR_MEGA2560)
+#if defined(ARDUINO_AVR_MEGA2560) && (ETH_ON)
 void startWebServer()
 {
   Serial.println("Starting web server...");  
@@ -203,11 +254,12 @@ void startWebServer()
   Serial.print("server is at ");
   Serial.println(Ethernet.localIP());
 }
+#endif
 
 
 void listenForClients()
 {
-  #if defined(ARDUINO_AVR_MEGA2560)
+  #if defined(ARDUINO_AVR_MEGA2560) && (ETH_ON)
   // listen for incoming clients
   EthernetClient client = server.available();
   
@@ -266,7 +318,7 @@ void listenForClients()
 
 
 boolean sync_time() {
-  #if defined(ARDUINO_AVR_MEGA2560)
+  #if defined(ARDUINO_AVR_MEGA2560) && (ETH_ON)
   Udp.begin(UDPlocalPort);
   sendNTPpacket(timeServer); // send an NTP packet to a time server
   // wait to see if a reply is available
@@ -319,7 +371,7 @@ boolean sync_time() {
 
 // send an NTP request to the time server at the given address
 void sendNTPpacket(char* address) {
-  #if defined(ARDUINO_AVR_MEGA2560)
+  #if defined(ARDUINO_AVR_MEGA2560) && (ETH_ON)
   // set all bytes in the buffer to 0
   memset(packetBuffer, 0, NTP_PACKET_SIZE);
   // Initialize values needed to form NTP request
@@ -342,8 +394,8 @@ void sendNTPpacket(char* address) {
   #endif
 }
 
-
-void LcdPrintMeasurements(Print &outdev, float temperature, float humidity)
+#ifdef DISPLAY_ON
+void LcdPrintMeasurements(Print &outdev, float temperature, float humidity, int ppm)
 {
   unsigned int temp, decimal_temp, hum_percent;
   float ftemp;
@@ -355,15 +407,23 @@ void LcdPrintMeasurements(Print &outdev, float temperature, float humidity)
   lcd.createChar(0, deg);
     
   outdev.write('T');
-  outdev.write(':');
+  // outdev.write(':');
   outdev.print((int)temp);
   outdev.write('.');
   outdev.print((int)(decimal_temp));
-  lcd.write(byte(0));
+  // lcd.write(byte(0));
   outdev.write('C');
   outdev.write(' ');
   outdev.write('H');
-  outdev.write(':');
+  // outdev.write(':');
   outdev.print((int)hum_percent);
   outdev.write('%');
+  outdev.write(' ');
+  outdev.write('A');
+  #ifdef CO2_ON
+  outdev.print((int)ppm);
+  #else
+  outdev.write('#');
+  #endif
 }
+#endif
